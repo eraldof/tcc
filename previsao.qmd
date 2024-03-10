@@ -1,0 +1,680 @@
+---
+title: "Prevendo o Próximo dia de Compra de um Cliente utilizando Machine Learning"
+author: "Eraldo Rocha"
+date: last-modified
+date-format: "DD MMM, YYYY"
+
+format: 
+  html:
+    theme: lux
+    code-fold: true
+    code-tools: true
+    code-block-bg: true
+    code-block-border-left: "#9400D3"
+    highlight-style: github
+    code-link: true
+    toc: true 
+    toc-title: Sumário
+    toc-location: left
+    toc-depth: 3
+    number-depth: 4
+    smooth-scroll: true
+    
+self-contained: true
+page-layout: full
+editor: source
+---
+
+::: callout-note
+## Nota
+
+Versão Prévia, documento com única e exclusiva finalidade de expor os resultados obtidos de maneira mais prática e objetiva. Comentários e explicações foram omitidos!
+:::
+
+# Carregando Pacotes
+```{r, warning = FALSE, message = FALSE}
+rm(list = ls())
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidymodels)
+library(patchwork)
+library(ggcorrplot)
+library(baguette)
+library(poissonreg)
+tidymodels_prefer()
+```
+
+
+# Banco de Dados
+```{r}
+setwd("C:/Users/erald/Desktop/tcc")
+dados <- read_delim("raw data.csv", delim = ";",
+                    escape_double = FALSE, col_types = cols(CODCLI = col_integer(),
+                                                            DATA = col_date(format = "%d/%m/%Y")),
+                    locale = locale(decimal_mark = ",", grouping_mark = "."),
+                    trim_ws = TRUE)
+
+head(dados)
+str(dados)
+colnames(dados) <- c('CODCLI', 'VLATEND', 'DATA')
+```
+
+## Limpeza e Tratamento do Banco de Dados
+```{r, message = FALSE}
+dados <- dados %>% group_by(CODCLI, DATA) %>% summarise(VENDAS = sum(VLATEND))
+temp <- dados %>% arrange(DATA) %>% filter(DATA >= as.Date("2024-01-01")) %>% group_by(CODCLI) %>%
+  summarise(ultcomp = max(DATA),
+            primcomp_depoisjanela = min(DATA))
+
+
+x <- dados %>% arrange(DATA) %>% filter(DATA < as.Date("2024-01-01")) %>% group_by(CODCLI) %>%
+  summarise(dcadastro = min(DATA), #data do cadastro
+            dcadastro_dias = as.Date("2023-12-31") - min(DATA),
+            d1 = rev(diff(DATA))[1],
+            d2 = rev(diff(DATA))[2],
+            d3 = rev(diff(DATA))[3],
+            dmedia = mean(c(d1,d2,d3)),
+            ddesvio = sd(c(d1,d2,d3)),
+            freq = n(),
+            tgasto = sum(VENDAS),
+            ultcompjanela = max(DATA),
+  ) %>% filter(freq > 3)
+
+dados <- x %>% left_join(temp)
+dados$dia_ultcomp_primcomp <- dados$primcomp_depoisjanela - dados$ultcompjanela
+```
+
+## Clusterização utilizando RFV (Recencia, Frequencia, Valor)
+```{r, warning = FALSE, message = FALSE, fig.align = 'center', out.width="100%"}
+rfv <- tibble(r = as.numeric(as.Date("2023-12-31") - dados$ultcompjanela),
+              f = dados$freq,
+              v = dados$tgasto,
+              CODCLI = dados$CODCLI)
+
+((ggplot(dados, aes(x = rfv$r)) +
+    geom_histogram(bins = 45, fill = "skyblue", color = "black", alpha = 0.7) +
+    labs(title = "Histograma da Recência das Compras",
+         x = "Valores",
+         y = "Frequência") + xlim(0, 300)) +
+    
+    (ggplot(dados, aes(x = rfv$f)) +
+       geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+       labs(title = "Histograma da Frequência de Compra",
+            x = "Valores",
+            y = "Frequência")) +
+    
+    (ggplot(rfv, aes(x = v)) +
+       geom_histogram(bins = 35, fill = "skyblue", color = "black", alpha = 0.7) +
+       labs(title = "Histograma do Valor Gasto",
+            x = "Valores",
+            y = "Frequência") + xlim(0, 100000)) )
+
+
+rfv$r[rfv$r < quantile(rfv$r)[2]] = 4
+rfv$r[rfv$r >= quantile(rfv$r)[2] & rfv$r < quantile(rfv$r)[3]] = 3
+rfv$r[rfv$r >= quantile(rfv$r)[3] & rfv$r < quantile(rfv$r)[4]] = 2
+rfv$r[rfv$r >= quantile(rfv$r)[4]] = 1
+
+rfv$f[rfv$f < quantile(rfv$f)[2]] = 1
+rfv$f[rfv$f >= quantile(rfv$f)[2] & rfv$f < quantile(rfv$f)[3]] = 2
+rfv$f[rfv$f >= quantile(rfv$f)[3] & rfv$f < quantile(rfv$f)[4]] = 3
+rfv$f[rfv$f >= quantile(rfv$f)[4]] = 4
+
+rfv$v[rfv$v < quantile(rfv$v)[2]] = 1
+rfv$v[rfv$v >= quantile(rfv$v)[2] & rfv$v < quantile(rfv$v)[3]] = 2
+rfv$v[rfv$v >= quantile(rfv$v)[3] & rfv$v < quantile(rfv$v)[4]] = 3
+rfv$v[rfv$v >= quantile(rfv$v)[4]] = 4
+
+rfv <- rfv %>% mutate(rfv = r + f + v)
+
+rfv$grupo2[rfv$rfv < quantile(rfv$rfv)[2]] = 'bronze customers'
+rfv$grupo2[rfv$rfv >= quantile(rfv$rfv)[2] & rfv$rfv < quantile(rfv$rfv)[3]] = 'silver customers'
+rfv$grupo2[rfv$rfv >= quantile(rfv$rfv)[3] & rfv$rfv < quantile(rfv$rfv)[4]] = 'gold customers'
+rfv$grupo2[rfv$rfv >= quantile(rfv$rfv)[4]] = 'diamond customers'
+
+dados <- dados %>% left_join(rfv)
+```
+
+## Identificação dos Dados Censurados e Não Censurados
+```{r}
+dados <- dados %>% select(-c("dcadastro", "ultcompjanela", "ultcomp", "primcomp_depoisjanela"))
+dados[,1:14] <- lapply(dados[,1:14] , as.numeric)
+colnames(dados) <- c("codcli", "dcadastro", "d1", "d2", "d3", "dmedia", "ddesvio", "freq", "tgasto", "Y", "r", "f", "v", "rfv", "clusters")
+
+dados_censurados <- dados %>%
+  filter_all(any_vars(is.na(.)))
+
+dados <- dados %>%
+  filter_all(all_vars(!is.na(.)))
+```
+
+
+```{r, fig.align = 'center', out.width="100%"}
+ggcorrplot(cor(dados[,c(1:14)]), hc.order = TRUE, type = "lower",
+   outline.col = "white", 
+   ggtheme = ggplot2::theme_gray,
+   colors = c("#6D9EC1", "white", "#E46726"))
+
+dados1 <- dados %>% select(-c("rfv", "clusters"))
+dados2 <- dados %>% select(-c("rfv", "r", "f", "v"))
+dados3 <- dados %>% select(-c("clusters", "r", "f", "v"))
+```
+
+
+
+
+# Banco 1 - Utilizando as features R, F e V.
+```{r}
+set.seed(2024)
+splitted <- initial_split(dados1, prop = 0.7, strata = "Y")
+treinamento <- training(splitted)
+```
+
+## Receita
+
+```{r}
+receita <- recipe(formula = `Y` ~ . , dados1) %>% 
+  step_corr(all_predictors()) %>% 
+  step_YeoJohnson(all_predictors()) %>% 
+  step_normalize(all_predictors())
+```
+
+## Configurando os Modelos
+```{r}
+randomforest <- 
+  rand_forest(
+    mtry = tune(), 
+    trees = tune(), 
+    min_n = tune()
+    ) %>%
+  set_mode("regression") %>% 
+  set_engine("ranger")
+  
+mlp <- 
+  mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("nnet")
+
+
+bag_mlp <-
+  bag_mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+    ) %>%
+  set_mode("regression") %>%
+  set_engine("nnet")
+
+xgb <-
+  boost_tree(
+   tree_depth = tune(),
+   trees = tune(),
+   learn_rate = tune(),
+   mtry = tune(),
+   min_n = tune(),
+   loss_reduction = tune(),
+   sample_size = tune(),
+   stop_iter = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+
+svm_linear <- 
+  svm_linear(
+    cost = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+svm_rbf <- 
+  svm_rbf(
+    cost = tune(),
+    rbf_sigma = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+pois <-
+  poisson_reg(
+    penalty = tune(),
+    mixture = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+
+grid_control <- control_grid(
+  save_pred = TRUE,
+  save_workflow = TRUE,
+  parallel_over = "resamples"
+)
+
+vfold <- 
+  treinamento %>% 
+  vfold_cv(v = 10L, strata = Y)
+
+metrica <- metric_set(rmse)
+
+
+all_wf <-
+   workflow_set(
+     preproc = list(receita),
+     models = list(
+       modelo_rf = randomforest,
+       modelo_mlp = mlp,
+       modelo_bagmlp = bag_mlp,
+       modelo_poi = pois,
+       modelo_svmrbf = svm_rbf,
+       modelo_svmlinear = svm_linear,
+       modelo_xgb = xgb
+     ),
+     cross = TRUE
+   ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+```
+
+## Tunning
+```{r}
+tunagem <- 
+  all_wf %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold,
+    control = grid_control,
+    grid = 50L,
+    metrics = metrica
+  )
+```
+
+## Ranking Modelos
+```{r, fig.align = 'center', out.width="100%"}
+autoplot(
+  tunagem,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+```
+
+## Hiperparametros do melhor modelo
+
+```{r, warning = FALSE}
+best = tunagem %>%
+  extract_workflow_set_result("modelo_xgb") %>%
+  select_best(metric = "rmse")
+
+best %>%
+  knitr::kable(caption = "Hiperparametros")
+```
+
+## Ajuste Final e Observando o RMSE do melhor modelo
+
+```{r}
+ wf_final <- 
+   tunagem %>% extract_workflow("modelo_xgb") %>% 
+   finalize_workflow(best)
+ 
+ teste <- 
+   wf_final %>%  
+   last_fit(split = splitted)
+ 
+ knitr::kable(teste$.metrics, caption = "Resultados")
+```
+
+# Banco 2 - Utilizando os Clusters.
+```{r}
+set.seed(2024)
+splitted <- initial_split(dados2, prop = 0.7, strata = "Y")
+treinamento <- training(splitted)
+```
+
+## Receita
+
+```{r}
+receita <- recipe(formula = `Y` ~ . , dados2) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_predictors()) %>% 
+  step_YeoJohnson(all_predictors()) %>% 
+  step_normalize(all_predictors())
+```
+
+## Configurando os Modelos
+```{r}
+randomforest <- 
+  rand_forest(
+    mtry = tune(), 
+    trees = tune(), 
+    min_n = tune()
+    ) %>%
+  set_mode("regression") %>% 
+  set_engine("ranger")
+  
+mlp <- 
+  mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("nnet")
+
+
+bag_mlp <-
+  bag_mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+    ) %>%
+  set_mode("regression") %>%
+  set_engine("nnet")
+
+xgb <-
+  boost_tree(
+   tree_depth = tune(),
+   trees = tune(),
+   learn_rate = tune(),
+   mtry = tune(),
+   min_n = tune(),
+   loss_reduction = tune(),
+   sample_size = tune(),
+   stop_iter = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+
+svm_linear <- 
+  svm_linear(
+    cost = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+svm_rbf <- 
+  svm_rbf(
+    cost = tune(),
+    rbf_sigma = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+pois <-
+  poisson_reg(
+    penalty = tune(),
+    mixture = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+
+grid_control <- control_grid(
+  save_pred = TRUE,
+  save_workflow = TRUE,
+  parallel_over = "resamples"
+)
+
+vfold <- 
+  treinamento %>% 
+  vfold_cv(v = 10L, strata = Y)
+
+metrica <- metric_set(rmse)
+
+
+all_wf2 <-
+   workflow_set(
+     preproc = list(receita),
+     models = list(
+       modelo_rf = randomforest,
+       modelo_mlp = mlp,
+       modelo_bagmlp = bag_mlp,
+       modelo_poi = pois,
+       modelo_svmrbf = svm_rbf,
+       modelo_svmlinear = svm_linear,
+       modelo_xgb = xgb
+     ),
+     cross = TRUE
+   ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+```
+
+## Tunning
+```{r}
+tunagem <- 
+  all_wf2 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold,
+    control = grid_control,
+    grid = 50L,
+    metrics = metrica
+  )
+```
+
+## Ranking Modelos
+```{r, fig.align = 'center', out.width="100%"}
+autoplot(
+  tunagem,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+```
+
+## Hiperparametros do melhor modelo
+
+```{r, warning = FALSE}
+best = tunagem %>%
+  extract_workflow_set_result("modelo_svmrbf") %>%
+  select_best(metric = "rmse")
+
+best %>%
+  knitr::kable(caption = "Hiperparametros")
+```
+
+## Ajuste Final e Observando o RMSE do melhor modelo
+
+```{r}
+ wf_final2 <- 
+   tunagem %>% extract_workflow("modelo_svmrbf") %>% 
+   finalize_workflow(best)
+ 
+ teste <- 
+   wf_final2 %>%  
+   last_fit(split = splitted)
+ 
+ knitr::kable(teste$.metrics, caption = "Resultados")
+```
+
+
+# Banco 3 - Utilizando o RFV.
+```{r}
+set.seed(2024)
+splitted <- initial_split(dados3, prop = 0.7, strata = "Y")
+treinamento <- training(splitted)
+```
+
+## Receita
+
+```{r}
+receita <- recipe(formula = `Y` ~ . , dados3) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_predictors()) %>% 
+  step_YeoJohnson(all_predictors()) %>% 
+  step_normalize(all_predictors())
+```
+
+## Configurando os Modelos
+```{r}
+randomforest <- 
+  rand_forest(
+    mtry = tune(), 
+    trees = tune(), 
+    min_n = tune()
+    ) %>%
+  set_mode("regression") %>% 
+  set_engine("ranger")
+  
+mlp <- 
+  mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("nnet")
+
+
+bag_mlp <-
+  bag_mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+    ) %>%
+  set_mode("regression") %>%
+  set_engine("nnet")
+
+xgb <-
+  boost_tree(
+   tree_depth = tune(),
+   trees = tune(),
+   learn_rate = tune(),
+   mtry = tune(),
+   min_n = tune(),
+   loss_reduction = tune(),
+   sample_size = tune(),
+   stop_iter = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+
+svm_linear <- 
+  svm_linear(
+    cost = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+svm_rbf <- 
+  svm_rbf(
+    cost = tune(),
+    rbf_sigma = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+pois <-
+  poisson_reg(
+    penalty = tune(),
+    mixture = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+
+grid_control <- control_grid(
+  save_pred = TRUE,
+  save_workflow = TRUE,
+  parallel_over = "resamples"
+)
+
+vfold <- 
+  treinamento %>% 
+  vfold_cv(v = 10L, strata = Y)
+
+metrica <- metric_set(rmse)
+
+
+all_wf3 <-
+   workflow_set(
+     preproc = list(receita),
+     models = list(
+       modelo_rf = randomforest,
+       modelo_mlp = mlp,
+       modelo_bagmlp = bag_mlp,
+       modelo_poi = pois,
+       modelo_svmrbf = svm_rbf,
+       modelo_svmlinear = svm_linear,
+       modelo_xgb = xgb
+     ),
+     cross = TRUE
+   ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+```
+
+## Tunning
+```{r}
+tunagem <- 
+  all_wf3 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold,
+    control = grid_control,
+    grid = 50L,
+    metrics = metrica
+  )
+```
+
+## Ranking Modelos
+```{r, fig.align = 'center', out.width="100%"}
+autoplot(
+  tunagem,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+```
+
+## Hiperparametros do melhor modelo
+
+```{r, warning = FALSE}
+best = tunagem %>%
+  extract_workflow_set_result("modelo_svmrbf") %>%
+  select_best(metric = "rmse")
+
+best %>%
+  knitr::kable(caption = "Hiperparametros")
+```
+
+## Ajuste Final e Observando o RMSE do melhor modelo
+
+```{r}
+ wf_final3 <- 
+   tunagem %>% extract_workflow("modelo_svmrbf") %>% 
+   finalize_workflow(best)
+ 
+ teste <- 
+   wf_final3 %>%  
+   last_fit(split = splitted)
+ 
+ knitr::kable(teste$.metrics, caption = "Resultados")
+```
+
+
+
+Modelo que usa as features r, f e v obteve o menor rmse. Banco de dados1.
+
+- Usar o predict com o melhor modelo nos dados censurados.
+- 
+
