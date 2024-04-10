@@ -33,7 +33,7 @@ Versão Prévia, documento com única e exclusiva finalidade de expor os resulta
 
 # Carregando Pacotes
 ```{r, warning = FALSE, message = FALSE}
-rm(list = ls())
+
 library(dplyr)
 library(readr)
 library(ggplot2)
@@ -46,8 +46,99 @@ tidymodels_prefer()
 ```
 
 ```{r}
-url = 'https://raw.githubusercontent.com/eraldof/tcc/main/base_tratada.csv'
-dados <- read.csv(url, sep = ";")
+rm(list = ls())
+DATA = 'https://raw.githubusercontent.com/eraldof/tcc/main/DATA.csv'
+DEVOLUCOES = 'https://raw.githubusercontent.com/eraldof/tcc/main/DEVOLUCOES.csv'
+
+DATA <- read.csv(DATA, sep = ";", dec = ",")
+DEVOLUCOES <- read.csv(DEVOLUCOES, sep = ";")
+
+
+colnames(DEVOLUCOES) <-  c("CODCLI", "VL_DEV", "QT_DEV")
+
+DATA$DATA <- as.Date(DATA$DATA, "%d/%m/%Y")
+
+```
+
+```{r}
+dados <- DATA %>% group_by(CODCLI, DATA) %>% summarise(VENDAS = sum(VLATEND),
+                                                       NUMITENS = sum(NUMITENS),
+                                                       LIMCRED = mean(LIMCRED))
+
+rm(DATA)
+
+temp <- dados %>% arrange(DATA) %>% filter(DATA >= as.Date("2024-02-01")) %>% group_by(CODCLI) %>%
+  summarise(ultcomp = max(DATA),
+            primcomp_depoisjanela = min(DATA))
+
+x <- dados %>% arrange(DATA) %>% filter(DATA < as.Date("2024-02-01")) %>% group_by(CODCLI) %>%
+  summarise(dcadastro_dias = as.Date("2024-01-31") - min(DATA),
+            d1 = rev(diff(DATA))[1],
+            d2 = rev(diff(DATA))[2],
+            d3 = rev(diff(DATA))[3],
+            dmedia = mean(c(d1,d2,d3)),
+            ddesvio = sd(c(d1,d2,d3)),
+            freq = n(),
+            tgasto = sum(VENDAS),
+            ultcompjanela = max(DATA),
+  ) %>% filter(freq > 3)
+
+
+rfv <- tibble(r = as.numeric(as.Date("2024-01-31") - x$ultcompjanela),
+              f = x$freq,
+              v = x$tgasto,
+              CODCLI = x$CODCLI)
+
+teste <- rfv
+
+rfv <- teste %>% filter(r < 100)
+
+x <- x %>% left_join(temp)
+x$dia_primcompultcomp <- x$primcomp_depoisjanela - x$ultcompjanela
+x <- x %>% select(-c("ultcomp", "primcomp_depoisjanela", "ultcompjanela"))
+x <- x %>% left_join(DEVOLUCOES, by = 'CODCLI')
+
+
+x <- as_tibble(lapply(x, as.numeric))
+
+
+x <- x %>% mutate(QT_DEV = ifelse(is.na(QT_DEV), 0, QT_DEV),
+                  VL_DEV = ifelse(is.na(VL_DEV), 0, VL_DEV),
+                  COMPROU = ifelse(is.na(dia_primcompultcomp), "N", "S"))
+
+colnames(x)[10] = "Y"
+
+
+rfv$r[rfv$r < quantile(rfv$r)[2]] = 4
+rfv$r[rfv$r >= quantile(rfv$r)[2] & rfv$r < quantile(rfv$r)[3]] = 3
+rfv$r[rfv$r >= quantile(rfv$r)[3] & rfv$r < quantile(rfv$r)[4]] = 2
+rfv$r[rfv$r >= quantile(rfv$r)[4]] = 1
+
+rfv$f[rfv$f < quantile(rfv$f)[2]] = 1
+rfv$f[rfv$f >= quantile(rfv$f)[2] & rfv$f < quantile(rfv$f)[3]] = 2
+rfv$f[rfv$f >= quantile(rfv$f)[3] & rfv$f < quantile(rfv$f)[4]] = 3
+rfv$f[rfv$f >= quantile(rfv$f)[4]] = 4
+
+rfv$v[rfv$v < quantile(rfv$v)[2]] = 1
+rfv$v[rfv$v >= quantile(rfv$v)[2] & rfv$v < quantile(rfv$v)[3]] = 2
+rfv$v[rfv$v >= quantile(rfv$v)[3] & rfv$v < quantile(rfv$v)[4]] = 3
+rfv$v[rfv$v >= quantile(rfv$v)[4]] = 4
+
+rfv <- rfv %>% mutate(rfv = r + f + v)
+
+rfv$cluster[rfv$rfv < quantile(rfv$rfv)[2]] = 'bronze customers'
+rfv$cluster[rfv$rfv >= quantile(rfv$rfv)[2] & rfv$rfv < quantile(rfv$rfv)[3]] = 'silver customers'
+rfv$cluster[rfv$rfv >= quantile(rfv$rfv)[3] & rfv$rfv < quantile(rfv$rfv)[4]] = 'gold customers'
+rfv$cluster[rfv$rfv >= quantile(rfv$rfv)[4]] = 'diamond customers'
+
+x <- x %>% right_join(rfv, by = 'CODCLI')
+
+```
+
+
+```{r}
+#url = 'https://raw.githubusercontent.com/eraldof/tcc/main/base_tratada.csv'
+dados <- x
 colnames(dados) <- c("codcli", "dcadastro", "d1", "d2", "d3", "dmedia", 
                      "ddesvio", "freq", "tgasto", "Y", "VL_DEV", "QT_DEV", "COMPROU", 
                      "r", "f", "v", "rfv", "clusters")
@@ -58,7 +149,7 @@ colnames(dados) <- c("codcli", "dcadastro", "d1", "d2", "d3", "dmedia",
 - Atribuindo 999 (dias) em clientes que não voltaram a comprar:
 ```{r}
 dados <- dados %>%
-  mutate(Y = ifelse(is.na(Y), 999, Y))
+  mutate(Y = ifelse(is.na(Y), 0, Y))
 
 # 
 # dados_censurados <- base_tratada %>%
@@ -81,23 +172,23 @@ dados6 <- dados %>% select(c("rfv", "dmedia", "ddesvio", "dcadastro", "tgasto", 
 ```{r}
 
 set.seed(2024)
-splitted <- initial_split(dados1, prop = 0.7, strata = "Y")
-treinamento1 <- training(splitted)
+splitted1 <- initial_split(dados1, prop = 0.7, strata = "Y")
+treinamento1 <- training(splitted1)
 
-splitted <- initial_split(dados2, prop = 0.7, strata = "Y")
-treinamento2 <- training(splitted)
+splitted2 <- initial_split(dados2, prop = 0.7, strata = "Y")
+treinamento2 <- training(splitted2)
 
-splitted <- initial_split(dados3, prop = 0.7, strata = "Y")
-treinamento3 <- training(splitted)
+splitted3 <- initial_split(dados3, prop = 0.7, strata = "Y")
+treinamento3 <- training(splitted3)
 
-splitted <- initial_split(dados4, prop = 0.7, strata = "Y")
-treinamento4 <- training(splitted)
+splitted4 <- initial_split(dados4, prop = 0.7, strata = "Y")
+treinamento4 <- training(splitted4)
 
-splitted <- initial_split(dados5, prop = 0.7, strata = "Y")
-treinamento5 <- training(splitted)
+splitted5 <- initial_split(dados5, prop = 0.7, strata = "Y")
+treinamento5 <- training(splitted5)
 
-splitted <- initial_split(dados6, prop = 0.7, strata = "Y")
-treinamento6 <- training(splitted)
+splitted6 <- initial_split(dados6, prop = 0.7, strata = "Y")
+treinamento6 <- training(splitted6)
 
 ```
 
@@ -157,6 +248,9 @@ receita6 <- recipe(formula = `Y` ~ . , dados6) %>%
 # Definindo os Modelos:
 
 ```{r}
+vv = 10L
+gg = 20L
+
 randomforest <- 
   rand_forest(
     mtry = tune(), 
@@ -238,7 +332,7 @@ metrica <- metric_set(rmse)
 ```{r}
 vfold1 <- 
   treinamento1 %>% 
-  vfold_cv(v = 5L, strata = Y)
+  vfold_cv(v = vv, strata = Y)
 
 all_wf1 <-
   workflow_set(
@@ -263,7 +357,7 @@ tunning1 <-
     seed = 2024,
     resamples = vfold1,
     control = grid_control,
-    grid = 50L,
+    grid = gg,
     metrics = metrica,
   )
 ```
@@ -282,13 +376,12 @@ autoplot(
 ```
 
 
-
 # Banco 2
 
 ```{r}
 vfold2 <- 
   treinamento2 %>% 
-  vfold_cv(v = 5L, strata = Y)
+  vfold_cv(v = vv, strata = Y)
 
 all_wf2 <-
   workflow_set(
@@ -313,7 +406,7 @@ tunning2 <-
     seed = 2024,
     resamples = vfold2,
     control = grid_control,
-    grid = 50L,
+    grid = gg,
     metrics = metrica,
   )
 ```
@@ -337,7 +430,7 @@ autoplot(
 ```{r}
 vfold3 <- 
   treinamento3 %>% 
-  vfold_cv(v = 5L, strata = Y)
+  vfold_cv(v = vv, strata = Y)
 
 all_wf3 <-
   workflow_set(
@@ -362,7 +455,7 @@ tunning3 <-
     seed = 2024,
     resamples = vfold3,
     control = grid_control,
-    grid = 50L,
+    grid = gg,
     metrics = metrica,
   )
 ```
@@ -386,7 +479,7 @@ autoplot(
 ```{r}
 vfold4 <- 
   treinamento4 %>% 
-  vfold_cv(v = 5L, strata = Y)
+  vfold_cv(v = vv, strata = Y)
 
 all_wf4 <-
   workflow_set(
@@ -411,7 +504,7 @@ tunning4 <-
     seed = 2024,
     resamples = vfold4,
     control = grid_control,
-    grid = 50L,
+    grid = gg,
     metrics = metrica,
   )
 ```
@@ -435,7 +528,7 @@ autoplot(
 ```{r}
 vfold5 <- 
   treinamento5 %>% 
-  vfold_cv(v = 5L, strata = Y)
+  vfold_cv(v = vv, strata = Y)
 
 all_wf5 <-
   workflow_set(
@@ -460,7 +553,7 @@ tunning5 <-
     seed = 2024,
     resamples = vfold5,
     control = grid_control,
-    grid = 50L,
+    grid = gg,
     metrics = metrica,
   )
 ```
@@ -484,7 +577,7 @@ autoplot(
 ```{r}
 vfold6 <- 
   treinamento6 %>% 
-  vfold_cv(v = 5L, strata = Y)
+  vfold_cv(v = vv, strata = Y)
 
 all_wf6 <-
   workflow_set(
@@ -509,7 +602,7 @@ tunning6 <-
     seed = 2024,
     resamples = vfold6,
     control = grid_control,
-    grid = 50L,
+    grid = gg,
     metrics = metrica,
   )
 ```
@@ -526,5 +619,28 @@ autoplot(
   labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
 
 ```
+
+
+# Resultados:
+
+
+```{r}
+best1 <- tunning1 %>%
+  extract_workflow_set_result("modelo_bagmlp") %>%
+  select_best(metric = "rmse")
+
+wf_final1 <-
+   tunning1 %>% extract_workflow("modelo_bagmlp") %>%
+   finalize_workflow(best1)
+
+teste1 <-
+   wf_final1 %>%
+   last_fit(split = splitted1)
+
+knitr::kable(teste1$.metrics, caption = "Resultados")
+```
+
+
+
 
 
