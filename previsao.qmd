@@ -249,7 +249,7 @@ receita6 <- recipe(formula = `Y` ~ . , dados6) %>%
 
 ```{r}
 vv = 10L
-gg = 20L
+gg = 40L
 
 randomforest <- 
   rand_forest(
@@ -623,7 +623,7 @@ autoplot(
 
 # Resultados:
 
-
+## 1
 ```{r}
 best1 <- tunning1 %>%
   extract_workflow_set_result("modelo_bagmlp") %>%
@@ -640,7 +640,91 @@ teste1 <-
 knitr::kable(teste1$.metrics, caption = "Resultados")
 ```
 
+## 2
+```{r}
+best2 <- tunning2 %>%
+  extract_workflow_set_result("modelo_xgb") %>%
+  select_best(metric = "rmse")
+
+wf_final2 <-
+   tunning2 %>% extract_workflow("modelo_xgb") %>%
+   finalize_workflow(best2)
+
+teste2 <-
+   wf_final2 %>%
+   last_fit(split = splitted2)
+
+knitr::kable(teste2$.metrics, caption = "Resultados")
+```
+
+## 3
+```{r}
+best3 <- tunning3 %>%
+  extract_workflow_set_result("modelo_rf") %>%
+  select_best(metric = "rmse")
+
+wf_final3 <-
+   tunning3 %>% extract_workflow("modelo_rf") %>%
+   finalize_workflow(best3)
+
+teste3 <-
+   wf_final3 %>%
+   last_fit(split = splitted3)
+
+knitr::kable(teste3$.metrics, caption = "Resultados")
+```
 
 
+## 4
+```{r}
+best4 <- tunning4 %>%
+  extract_workflow_set_result("modelo_rf") %>%
+  select_best(metric = "rmse")
 
+wf_final4 <-
+   tunning4 %>% extract_workflow("modelo_rf") %>%
+   finalize_workflow(best4)
+
+teste4 <-
+   wf_final4 %>%
+   last_fit(split = splitted4)
+
+knitr::kable(teste4$.metrics, caption = "Resultados")
+```
+
+
+## 5
+```{r}
+best5 <- tunning5 %>%
+  extract_workflow_set_result("modelo_bagmlp") %>%
+  select_best(metric = "rmse")
+
+wf_final5 <-
+   tunning5 %>% extract_workflow("modelo_bagmlp") %>%
+   finalize_workflow(best5)
+
+teste5 <-
+   wf_final5 %>%
+   last_fit(split = splitted5)
+
+knitr::kable(teste5$.metrics, caption = "Resultados")
+```
+
+
+## 6
+```{r}
+best6 <- tunning6 %>%
+  extract_workflow_set_result("modelo_bagmlp") %>%
+  select_best(metric = "rmse")
+
+wf_final6 <-
+   tunning6 %>% extract_workflow("modelo_bagmlp") %>%
+   finalize_workflow(best6)
+
+teste6 <-
+   wf_final6 %>%
+   last_fit(split = splitted6)
+
+knitr::kable(teste6$.metrics, caption = "Resultados")
+```
 
