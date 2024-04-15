@@ -33,6 +33,7 @@ Versão Prévia, documento com única e exclusiva finalidade de expor os resulta
 
 # Carregando Pacotes
 ```{r, warning = FALSE, message = FALSE}
+doParallel::registerDoParallel(parallel::detectCores(logical = FALSE))
 
 library(dplyr)
 library(readr)
@@ -70,12 +71,11 @@ dados <- dados %>%
 
 ```{r}
 dados1 <- dados %>% select("r", "f", "v", "d1", "d2", "d3", "VL_DEV", "QT_DEV", "dcadastro", "dmedia", "ddesvio" , "Y")
-dados2 <- dados %>% select("clr", "clf", "clv", "dmedia", "ddesvio","VL_DEV", "QT_DEV", "dcadastro","d1", "d2", "d3", "Y")
-dados3 <- dados %>% select("d1", "d2", "d3", "dcadastro", "f", "v", "clusters", "Y")
+dados2 <- dados %>% select("clr", "clf", "clv","d1", "d2", "d3", "VL_DEV", "QT_DEV", "dcadastro", "dmedia", "ddesvio", "Y")
+dados3 <- dados %>% select("d1", "d2", "d3", "dcadastro", "r", "f", "v", "clusters", "Y")
 dados4 <- dados %>% select("dmedia", "ddesvio", "dcadastro", "v", "f", "r", "clusters", "Y")
 dados5 <- dados %>% select("rfv", "d1", "d2", "d3", "VL_DEV", "QT_DEV", "dcadastro", "dmedia", "ddesvio", "Y")
-dados6 <- dados %>% select("rfv", "dmedia", "ddesvio", "dcadastro", "d1", "d2", "d3", "VL_DEV", "QT_DEV", "Y")
-
+dados6 <- dados %>% select("dmedia", "ddesvio", "dcadastro","VL_DEV", "QT_DEV", "clusters", "Y")
 ```
 
 # Repartindo banco em TRN-70 e TST-30:
@@ -108,59 +108,65 @@ treinamento6 <- training(splitted6)
 ```{r}
 #Banco 1
 receita1 <- recipe(formula = `Y` ~ . , dados1) %>% 
-  step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
   #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
 
 #Banco 2
 receita2 <- recipe(formula = `Y` ~ . , dados2) %>% 
-  step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
   #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
 
 #Banco 3
 receita3 <- recipe(formula = `Y` ~ . , dados3) %>% 
-  step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
   #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
 
 #Banco 4
 receita4 <- recipe(formula = `Y` ~ . , dados4) %>% 
-  step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
   #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
 
 #Banco 5
 receita5 <- recipe(formula = `Y` ~ . , dados5) %>% 
-  step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
   #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
 
 #Banco 6
 receita6 <- recipe(formula = `Y` ~ . , dados6) %>% 
-  step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
   #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
 
 ```
 
 # Definindo os Modelos:
 
 ```{r}
-vv = 4L
-gg = 20L
+vv = 10L
+gg = 50L
 
 randomforest <- 
   rand_forest(
@@ -534,15 +540,48 @@ autoplot(
 
 # Resultados:
 
+
+```{r}
+results <- (rank_results(tunning1,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[2,1] <- (rank_results(tunning2,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[3,1] <- (rank_results(tunning3,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[4,1] <- (rank_results(tunning4,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[5,1] <- (rank_results(tunning5,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[6,1] <- (rank_results(tunning6,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+
+
+```
+
+
+
+
 ## 1
 ```{r}
 set.seed(2024)
 best1 <- tunning1 %>%
-  extract_workflow_set_result("modelo_bagmlp") %>%
+  extract_workflow_set_result(as.character(results[1,1])) %>%
   select_best(metric = "rmse")
 
 wf_final1 <-
-   tunning1 %>% extract_workflow("modelo_bagmlp") %>%
+   tunning1 %>% extract_workflow(as.character(results[1,1])) %>%
    finalize_workflow(best1)
 
 teste1 <-
@@ -556,11 +595,11 @@ knitr::kable(teste1$.metrics, caption = "Resultados")
 ```{r}
 set.seed(2024)
 best2 <- tunning2 %>%
-  extract_workflow_set_result("modelo_xgb") %>%
+  extract_workflow_set_result(as.character(results[2,1])) %>%
   select_best(metric = "rmse")
 
 wf_final2 <-
-   tunning2 %>% extract_workflow("modelo_xgb") %>%
+   tunning2 %>% extract_workflow(as.character(results[2,1])) %>%
    finalize_workflow(best2)
 
 teste2 <-
@@ -574,11 +613,11 @@ knitr::kable(teste2$.metrics, caption = "Resultados")
 ```{r}
 set.seed(2024)
 best3 <- tunning3 %>%
-  extract_workflow_set_result("modelo_rf") %>%
+  extract_workflow_set_result(as.character(results[3,1])) %>%
   select_best(metric = "rmse")
 
 wf_final3 <-
-   tunning3 %>% extract_workflow("modelo_rf") %>%
+   tunning3 %>% extract_workflow(as.character(results[3,1])) %>%
    finalize_workflow(best3)
 
 teste3 <-
@@ -593,11 +632,11 @@ knitr::kable(teste3$.metrics, caption = "Resultados")
 ```{r}
 set.seed(2024)
 best4 <- tunning4 %>%
-  extract_workflow_set_result("modelo_rf") %>%
+  extract_workflow_set_result(as.character(results[4,1])) %>%
   select_best(metric = "rmse")
 
 wf_final4 <-
-   tunning4 %>% extract_workflow("modelo_rf") %>%
+   tunning4 %>% extract_workflow(as.character(results[4,1])) %>%
    finalize_workflow(best4)
 
 teste4 <-
@@ -612,11 +651,11 @@ knitr::kable(teste4$.metrics, caption = "Resultados")
 ```{r}
 set.seed(2024)
 best5 <- tunning5 %>%
-  extract_workflow_set_result("modelo_bagmlp") %>%
+  extract_workflow_set_result(as.character(results[5,1])) %>%
   select_best(metric = "rmse")
 
 wf_final5 <-
-   tunning5 %>% extract_workflow("modelo_bagmlp") %>%
+   tunning5 %>% extract_workflow(as.character(results[5,1])) %>%
    finalize_workflow(best5)
 
 teste5 <-
@@ -631,11 +670,11 @@ knitr::kable(teste5$.metrics, caption = "Resultados")
 ```{r}
 set.seed(2024)
 best6 <- tunning6 %>%
-  extract_workflow_set_result("modelo_bagmlp") %>%
+  extract_workflow_set_result(as.character(results[6,1])) %>%
   select_best(metric = "rmse")
 
 wf_final6 <-
-   tunning6 %>% extract_workflow("modelo_bagmlp") %>%
+   tunning6 %>% extract_workflow(as.character(results[6,1])) %>%
    finalize_workflow(best6)
 
 teste6 <-
