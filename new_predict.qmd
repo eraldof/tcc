@@ -1,0 +1,821 @@
+---
+title: "Prevendo o Próximo dia de Compra de um Cliente utilizando Machine Learning"
+author: "Eraldo Rocha"
+date: last-modified
+date-format: "DD MMM, YYYY"
+
+format: 
+  html:
+    theme: lux
+    code-fold: true
+    code-tools: true
+    code-block-bg: true
+    code-block-border-left: "#9400D3"
+    highlight-style: github
+    code-link: true
+    toc: true 
+    toc-title: Sumário
+    toc-location: left
+    toc-depth: 3
+    number-depth: 4
+    smooth-scroll: true
+    
+self-contained: true
+page-layout: full
+editor: source
+---
+
+::: callout-note
+## Nota
+
+Versão Prévia, documento com única e exclusiva finalidade de expor os resultados obtidos de maneira mais prática e objetiva. Comentários e explicações foram omitidos!
+:::
+
+# Carregando Pacotes
+```{r, warning = FALSE, message = FALSE}
+doParallel::registerDoParallel(parallel::detectCores(logical = FALSE))
+rm(list = ls())
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidymodels)
+library(patchwork)
+library(ggcorrplot)
+library(baguette)
+library(poissonreg)
+source("teste/elbow_method.R")
+tidymodels_prefer()
+```
+
+```{r}
+DATA = 'https://raw.githubusercontent.com/eraldof/tcc/main/DATA.csv'
+DEVOLUCOES = 'https://raw.githubusercontent.com/eraldof/tcc/main/DEVOLUCOES.csv'
+
+DATA <- read.csv(DATA, sep = ";", dec = ",")
+DEVOLUCOES <- read.csv(DEVOLUCOES, sep = ";")
+
+
+colnames(DEVOLUCOES) <-  c("CODCLI", "VL_DEV", "QT_DEV")
+
+DATA$DATA <- as.Date(DATA$DATA, "%d/%m/%Y")
+
+dados <- DATA %>% group_by(CODCLI, DATA) %>% summarise(VENDAS = sum(VLATEND),
+                                                         NUMITENS = sum(NUMITENS),
+                                                         LIMCRED = mean(LIMCRED))
+
+temp <- dados %>%
+  arrange(DATA) %>%
+  filter(DATA >= as.Date("2024-01-22")) %>%
+  group_by(CODCLI) %>%
+  summarise(ultcomp = max(DATA),
+            primcomp_depoisjanela = min(DATA))
+
+x <- dados %>%
+  arrange(desc(DATA)) %>%
+  filter(DATA < as.Date("2024-01-22")) %>%
+  group_by(CODCLI) %>%
+  summarise(dcadastro_dias = as.Date("2024-01-22") - min(DATA),
+            d1 = abs(diff(DATA)[1]),
+            d2 = abs(diff(DATA)[2]),
+            d3 = abs(diff(DATA)[3]),
+            dmedia = mean(c(d1,d2,d3)),
+            ddesvio = sd(c(d1,d2,d3)),
+            r = as.numeric(as.Date("2024-01-21") - max(DATA)),
+            f = n(),
+            v = sum(VENDAS),
+            ultcompjanela = max(DATA)
+  ) %>% filter(f > 3)
+
+
+x <- x %>% left_join(temp, by = "CODCLI")
+x$Y <- x$primcomp_depoisjanela - x$ultcompjanela
+x <- x %>% select(-c("ultcomp", "primcomp_depoisjanela", "ultcompjanela"))
+x <- x %>% left_join(DEVOLUCOES, by = 'CODCLI')
+
+
+x <- as_tibble(lapply(x, as.numeric))
+
+
+x <- x %>% mutate(QT_DEV = ifelse(is.na(QT_DEV), 0, QT_DEV),
+                  VL_DEV = ifelse(is.na(VL_DEV), 0, VL_DEV),
+                  COMPROU = ifelse(is.na(Y), "N", "S"))
+
+
+
+```
+
+
+
+```{r}
+# Clustering recency
+
+set.seed(1313)
+elbow.plot(as.matrix(x$r))
+
+set.seed(1313)
+fit.recency <- kmeans(as.matrix(x$r), centers = 4, iter.max = 100, nstart = 30)
+
+
+# Clustering frequency
+
+set.seed(1313)
+elbow.plot(as.matrix(x$f))
+
+set.seed(1313)
+fit.frequency <- kmeans(as.matrix(x$f), centers = 4, iter.max = 100, nstart = 30)
+
+
+# Clustering value
+
+set.seed(1313)
+elbow.plot(as.matrix(x$v))
+
+set.seed(1313)
+fit.value <- kmeans(as.matrix(x$v), centers = 4, iter.max = 100, nstart = 30)
+
+
+cl.r <- fit.recency$cluster
+cl.f <- fit.frequency$cluster
+cl.v <- fit.value$cluster
+
+cl_df <- tibble(r=x$r,f=x$f,v=x$v,
+                clr=as.factor(cl.r),clf=as.factor(cl.f),clv=as.factor(cl.v))
+
+x_original = x
+
+cl_df <- tibble(r=x$r,f=x$f,v=x$v,
+                clr=cl.r,clf=cl.f,clv=cl.v)
+
+cl_df$clr = cl_df$clr + 4
+cl_df$clf = cl_df$clf + 4
+cl_df$clv = cl_df$clv + 4
+
+cl_df$clr[cl_df$clr == 5] <- 0
+cl_df$clr[cl_df$clr == 7] <- 1
+cl_df$clr[cl_df$clr == 6] <- 2
+cl_df$clr[cl_df$clr == 8] <- 3
+
+cl_df$clf[cl_df$clf == 7] <- 0
+cl_df$clf[cl_df$clf == 5] <- 1
+cl_df$clf[cl_df$clf == 8] <- 2
+cl_df$clf[cl_df$clf == 6] <- 3
+
+cl_df$clv[cl_df$clv == 5] <- 0
+cl_df$clv[cl_df$clv == 7] <- 1
+cl_df$clv[cl_df$clv == 6] <- 2
+cl_df$clv[cl_df$clv == 8] <- 3
+
+x$clr <- cl_df$clr
+x$clf <- cl_df$clf
+x$clv <- cl_df$clv
+x$rfv <- cl_df$clr + cl_df$clf + cl_df$clv
+
+x$cluster[x$rfv <= quantile(x$rfv)[2]] <- 1
+x$cluster[x$rfv > quantile(x$rfv)[2] & x$rfv <= quantile(x$rfv)[4]] <- 2
+x$cluster[x$rfv > quantile(x$rfv)[4]] <- 3
+
+x$cluster <- factor(x$cluster,
+                    levels = 1:3,
+                    labels = c("low value costumers","mid value costumers","high value costumers"),
+                    ordered = TRUE)
+
+```
+
+
+
+```{r}
+dados <- x
+colnames(dados) <- c("codcli", "dcadastro", "d1", "d2", "d3", "dmedia", "ddesvio", "r", "f", "v", "Y", "VL_DEV", "QT_DEV", "COMPROU", "clr", "clf", "clv", "rfv", "clusters")
+```
+
+# Dados Não-Censurados
+
+
+```{r}
+# dados <- dados %>%
+#   mutate(Y = ifelse(is.na(Y), 0, Y))
+
+dados <- dados %>%
+  filter_all(all_vars(!is.na(.)))
+
+# 
+# dados_censurados <- base_tratada %>%
+#   filter_all(any_vars(is.na(.)))
+#
+```
+
+```{r}
+dados1 <- dados %>% select("r", "f", "v", "d1", "d2", "d3", "VL_DEV", "QT_DEV", "dcadastro", "dmedia", "ddesvio" , "Y")
+dados2 <- dados %>% select("clr", "clf", "clv","d1", "d2", "d3", "VL_DEV", "QT_DEV", "dcadastro", "dmedia", "ddesvio", "Y")
+dados3 <- dados %>% select("d1", "d2", "d3", "dcadastro", "r", "f", "v", "clusters", "Y")
+dados4 <- dados %>% select("dmedia", "ddesvio", "dcadastro", "v", "f", "r", "clusters", "Y")
+dados5 <- dados %>% select("rfv", "d1", "d2", "d3", "VL_DEV", "QT_DEV", "dcadastro", "dmedia", "ddesvio", "Y")
+dados6 <- dados %>% select("dmedia", "ddesvio", "dcadastro","VL_DEV", "QT_DEV", "clusters", "Y")
+```
+
+# Repartindo banco em TRN-70 e TST-30:
+
+```{r}
+
+set.seed(2024)
+splitted1 <- initial_split(dados1, prop = 0.7, strata = "Y")
+treinamento1 <- training(splitted1)
+
+splitted2 <- initial_split(dados2, prop = 0.7, strata = "Y")
+treinamento2 <- training(splitted2)
+
+splitted3 <- initial_split(dados3, prop = 0.7, strata = "Y")
+treinamento3 <- training(splitted3)
+
+splitted4 <- initial_split(dados4, prop = 0.7, strata = "Y")
+treinamento4 <- training(splitted4)
+
+splitted5 <- initial_split(dados5, prop = 0.7, strata = "Y")
+treinamento5 <- training(splitted5)
+
+splitted6 <- initial_split(dados6, prop = 0.7, strata = "Y")
+treinamento6 <- training(splitted6)
+
+```
+
+# Receita
+
+```{r}
+#Banco 1
+receita1 <- recipe(formula = `Y` ~ . , dados1) %>% 
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
+
+#Banco 2
+receita2 <- recipe(formula = `Y` ~ . , dados2) %>% 
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
+
+#Banco 3
+receita3 <- recipe(formula = `Y` ~ . , dados3) %>% 
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
+
+#Banco 4
+receita4 <- recipe(formula = `Y` ~ . , dados4) %>% 
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
+
+#Banco 5
+receita5 <- recipe(formula = `Y` ~ . , dados5) %>% 
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
+
+#Banco 6
+receita6 <- recipe(formula = `Y` ~ . , dados6) %>% 
+  #step_poly(all_numeric_predictors(), degree = 2) %>%
+  #step_interact(terms = ~ all_numeric_predictors():all_numeric_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_corr(all_numeric_predictors(), threshold = 0.8, method = "spearman")
+
+```
+
+# Definindo os Modelos:
+
+```{r}
+vv = 10L
+gg = 50L
+
+randomforest <- 
+  rand_forest(
+    mtry = tune(), 
+    trees = tune(), 
+    min_n = tune()
+  ) %>%
+  set_mode("regression") %>% 
+  set_engine("ranger")
+
+mlp <- 
+  mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("nnet")
+
+bag_mlp <-
+  bag_mlp(
+    hidden_units = tune(),
+    penalty = tune(),
+    epochs = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("nnet")
+
+xgb <-
+  boost_tree(
+    tree_depth = tune(),
+    trees = tune(),
+    learn_rate = tune(),
+    mtry = tune(),
+    min_n = tune(),
+    loss_reduction = tune(),
+    sample_size = tune(),
+    stop_iter = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+svm_linear <- 
+  svm_linear(
+    cost = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+svm_rbf <- 
+  svm_rbf(
+    cost = tune(),
+    rbf_sigma = tune(),
+    margin = tune()
+  ) %>% 
+  set_mode("regression") %>% 
+  set_engine("kernlab")
+
+pois <-
+  poisson_reg(
+    penalty = tune(),
+    mixture = tune()
+  ) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+grid_control <- control_grid(
+  save_pred = TRUE,
+  save_workflow = TRUE,
+  parallel_over = "resamples"
+)
+
+metrica <- metric_set(rmse)
+```
+
+
+# Banco 1
+
+```{r}
+vfold1 <- 
+  treinamento1 %>% 
+  vfold_cv(v = vv, strata = Y)
+
+all_wf1 <-
+  workflow_set(
+    preproc = list(receita1),
+    models = list(
+      modelo_rf = randomforest,
+      modelo_mlp = mlp,
+      modelo_bagmlp = bag_mlp,
+      modelo_poi = pois,
+      modelo_svmrbf = svm_rbf,
+      modelo_svmlinear = svm_linear,
+      modelo_xgb = xgb
+    ),
+    cross = TRUE
+  ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+tunning1 <- 
+  all_wf1 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold1,
+    control = grid_control,
+    grid = gg,
+    metrics = metrica,
+  )
+```
+
+## Autoplot 
+
+```{r}
+autoplot(
+  tunning1,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+
+```
+
+
+# Banco 2
+
+```{r}
+vfold2 <- 
+  treinamento2 %>% 
+  vfold_cv(v = vv, strata = Y)
+
+all_wf2 <-
+  workflow_set(
+    preproc = list(receita2),
+    models = list(
+      modelo_rf = randomforest,
+      modelo_mlp = mlp,
+      modelo_bagmlp = bag_mlp,
+      modelo_poi = pois,
+      modelo_svmrbf = svm_rbf,
+      modelo_svmlinear = svm_linear,
+      modelo_xgb = xgb
+    ),
+    cross = TRUE
+  ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+tunning2 <- 
+  all_wf2 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold2,
+    control = grid_control,
+    grid = gg,
+    metrics = metrica,
+  )
+```
+
+## Autoplot 
+
+```{r}
+autoplot(
+  tunning2,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+
+```
+
+
+# Banco 3
+
+```{r}
+vfold3 <- 
+  treinamento3 %>% 
+  vfold_cv(v = vv, strata = Y)
+
+all_wf3 <-
+  workflow_set(
+    preproc = list(receita3),
+    models = list(
+      modelo_rf = randomforest,
+      modelo_mlp = mlp,
+      modelo_bagmlp = bag_mlp,
+      modelo_poi = pois,
+      modelo_svmrbf = svm_rbf,
+      modelo_svmlinear = svm_linear,
+      modelo_xgb = xgb
+    ),
+    cross = TRUE
+  ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+tunning3 <- 
+  all_wf3 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold3,
+    control = grid_control,
+    grid = gg,
+    metrics = metrica,
+  )
+```
+
+## Autoplot 
+
+```{r}
+autoplot(
+  tunning3,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+
+```
+
+
+# Banco 4
+
+```{r}
+vfold4 <- 
+  treinamento4 %>% 
+  vfold_cv(v = vv, strata = Y)
+
+all_wf4 <-
+  workflow_set(
+    preproc = list(receita4),
+    models = list(
+      modelo_rf = randomforest,
+      modelo_mlp = mlp,
+      modelo_bagmlp = bag_mlp,
+      modelo_poi = pois,
+      modelo_svmrbf = svm_rbf,
+      modelo_svmlinear = svm_linear,
+      modelo_xgb = xgb
+    ),
+    cross = TRUE
+  ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+tunning4 <- 
+  all_wf4 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold4,
+    control = grid_control,
+    grid = gg,
+    metrics = metrica,
+  )
+```
+
+## Autoplot 
+
+```{r}
+autoplot(
+  tunning4,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+
+```
+
+
+# Banco 5
+
+```{r}
+vfold5 <- 
+  treinamento5 %>% 
+  vfold_cv(v = vv, strata = Y)
+
+all_wf5 <-
+  workflow_set(
+    preproc = list(receita5),
+    models = list(
+      modelo_rf = randomforest,
+      modelo_mlp = mlp,
+      modelo_bagmlp = bag_mlp,
+      modelo_poi = pois,
+      modelo_svmrbf = svm_rbf,
+      modelo_svmlinear = svm_linear,
+      modelo_xgb = xgb
+    ),
+    cross = TRUE
+  ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+tunning5 <- 
+  all_wf5 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold5,
+    control = grid_control,
+    grid = gg,
+    metrics = metrica,
+  )
+```
+
+## Autoplot 
+
+```{r}
+autoplot(
+  tunning5,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+
+```
+
+
+# Banco 6
+
+```{r}
+vfold6 <- 
+  treinamento6 %>% 
+  vfold_cv(v = vv, strata = Y)
+
+all_wf6 <-
+  workflow_set(
+    preproc = list(receita6),
+    models = list(
+      modelo_rf = randomforest,
+      modelo_mlp = mlp,
+      modelo_bagmlp = bag_mlp,
+      modelo_poi = pois,
+      modelo_svmrbf = svm_rbf,
+      modelo_svmlinear = svm_linear,
+      modelo_xgb = xgb
+    ),
+    cross = TRUE
+  ) %>%
+  mutate(wflow_id = gsub("(recipe_)", "", wflow_id))
+
+tunning6 <- 
+  all_wf6 %>% 
+  workflow_map(
+    verbose = TRUE,
+    seed = 2024,
+    resamples = vfold6,
+    control = grid_control,
+    grid = gg,
+    metrics = metrica,
+  )
+```
+
+## Autoplot 
+
+```{r}
+autoplot(
+  tunning6,
+  rank_metric = "rmse",
+  metric = "rmse",
+  select_best = TRUE
+) + 
+  labs(title = "Melhor resultado dos modelos")+ ylab("rmse")+ xlab("Ranking")
+
+```
+
+
+# Resultados:
+
+
+```{r}
+results <- (rank_results(tunning1,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[2,1] <- (rank_results(tunning2,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[3,1] <- (rank_results(tunning3,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[4,1] <- (rank_results(tunning4,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[5,1] <- (rank_results(tunning5,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+results[6,1] <- (rank_results(tunning6,
+                          select_best = TRUE,
+                          rank_metric = "rmse") %>% select(wflow_id))[1,1]
+
+
+
+```
+
+
+
+
+## 1
+```{r}
+set.seed(2024)
+best1 <- tunning1 %>%
+  extract_workflow_set_result(as.character(results[1,1])) %>%
+  select_best(metric = "rmse")
+
+wf_final1 <-
+   tunning1 %>% extract_workflow(as.character(results[1,1])) %>%
+   finalize_workflow(best1)
+
+teste1 <-
+   wf_final1 %>%
+   last_fit(split = splitted1)
+
+knitr::kable(teste1$.metrics, caption = "Resultados")
+```
+
+## 2
+```{r}
+set.seed(2024)
+best2 <- tunning2 %>%
+  extract_workflow_set_result(as.character(results[2,1])) %>%
+  select_best(metric = "rmse")
+
+wf_final2 <-
+   tunning2 %>% extract_workflow(as.character(results[2,1])) %>%
+   finalize_workflow(best2)
+
+teste2 <-
+   wf_final2 %>%
+   last_fit(split = splitted2)
+
+knitr::kable(teste2$.metrics, caption = "Resultados")
+```
+
+## 3
+```{r}
+set.seed(2024)
+best3 <- tunning3 %>%
+  extract_workflow_set_result(as.character(results[3,1])) %>%
+  select_best(metric = "rmse")
+
+wf_final3 <-
+   tunning3 %>% extract_workflow(as.character(results[3,1])) %>%
+   finalize_workflow(best3)
+
+teste3 <-
+   wf_final3 %>%
+   last_fit(split = splitted3)
+
+knitr::kable(teste3$.metrics, caption = "Resultados")
+```
+
+
+## 4
+```{r}
+set.seed(2024)
+best4 <- tunning4 %>%
+  extract_workflow_set_result(as.character(results[4,1])) %>%
+  select_best(metric = "rmse")
+
+wf_final4 <-
+   tunning4 %>% extract_workflow(as.character(results[4,1])) %>%
+   finalize_workflow(best4)
+
+teste4 <-
+   wf_final4 %>%
+   last_fit(split = splitted4)
+
+knitr::kable(teste4$.metrics, caption = "Resultados")
+```
+
+
+## 5
+```{r}
+set.seed(2024)
+best5 <- tunning5 %>%
+  extract_workflow_set_result(as.character(results[5,1])) %>%
+  select_best(metric = "rmse")
+
+wf_final5 <-
+   tunning5 %>% extract_workflow(as.character(results[5,1])) %>%
+   finalize_workflow(best5)
+
+teste5 <-
+   wf_final5 %>%
+   last_fit(split = splitted5)
+
+knitr::kable(teste5$.metrics, caption = "Resultados")
+```
+
+
+## 6
+```{r}
+set.seed(2024)
+best6 <- tunning6 %>%
+  extract_workflow_set_result(as.character(results[6,1])) %>%
+  select_best(metric = "rmse")
+
+wf_final6 <-
+   tunning6 %>% extract_workflow(as.character(results[6,1])) %>%
+   finalize_workflow(best6)
+
+teste6 <-
+   wf_final6 %>%
+   last_fit(split = splitted6)
+
+knitr::kable(teste6$.metrics, caption = "Resultados")
+```
+
