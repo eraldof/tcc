@@ -5,12 +5,9 @@ library(ggplot2)
 library(patchwork)
 
 #setwd("/Users/marceloferreira/Dropbox/DE-UFPB/disciplinas/2023-2/TCC II/Eraldo")
-setwd("C:/Users/erald/Desktop/tcc")
+setwd("C:/Users/erald/Desktop/tcc/alteracao ultima hora")
 
 
-DEVOLUCOES <- read_delim("DEVOLUCOES.csv",
-                         delim = ";", escape_double = FALSE, trim_ws = TRUE)
-colnames(DEVOLUCOES) <-  c("CODCLI", "VL_DEV", "QT_DEV")
 
 DATAdf <- read_delim("DATA.csv",
                      delim = ";", escape_double = FALSE,
@@ -21,8 +18,7 @@ DATAdf <- read_delim("DATA.csv",
 
 
 dados <- DATAdf %>% group_by(CODCLI, DATA) %>% summarise(VENDAS = sum(VLATEND),
-                                                         NUMITENS = sum(NUMITENS),
-                                                         LIMCRED = mean(LIMCRED))
+                                                         NUMITENS = sum(NUMITENS))
 
 rm(DATAdf)
 
@@ -54,18 +50,18 @@ x <- dados %>%
 #               v = x$tgasto,
 #               CODCLI = x$CODCLI)
 
-x <- x %>% left_join(temp, by = "CODCLI")
+x <- x %>% left_join(temp)
 x$Y <- x$primcomp_depoisjanela - x$ultcompjanela
 x <- x %>% select(-c("ultcomp", "primcomp_depoisjanela", "ultcompjanela"))
-x <- x %>% left_join(DEVOLUCOES, by = 'CODCLI')
+#x <- x %>% left_join(DEVOLUCOES, by = 'CODCLI')
 
 
 x <- as_tibble(lapply(x, as.numeric))
 
 
-x <- x %>% mutate(QT_DEV = ifelse(is.na(QT_DEV), 0, QT_DEV),
-                  VL_DEV = ifelse(is.na(VL_DEV), 0, VL_DEV),
-                  COMPROU = ifelse(is.na(Y), "N", "S"))
+#x <- x %>% mutate(QT_DEV = ifelse(is.na(QT_DEV), 0, QT_DEV),
+#                  VL_DEV = ifelse(is.na(VL_DEV), 0, VL_DEV),
+#                  COMPROU = ifelse(is.na(Y), "N", "S"))
 
 x %>% ggplot() +
   geom_histogram(aes(x = r))
@@ -95,6 +91,7 @@ x %>%
 # rfv$v[rfv$v >= quantile(rfv$v)[3] & rfv$v < quantile(rfv$v)[4]] = 3
 # rfv$v[rfv$v >= quantile(rfv$v)[4]] = 4
 
+setwd("C:/Users/erald/Desktop/tcc")
 source("teste/elbow_method.R")
 
 # Clustering recency
@@ -221,7 +218,7 @@ x$cluster[x$rfv > quantile(x$rfv)[4]] <- 3
 
 x$cluster <- factor(x$cluster,
                     levels = 1:3,
-                    labels = c("low value costumers","mid value costumers","high value costumers"),
+                    labels = c("baixo valor","médio valor","alto valor"),
                     ordered = TRUE)
 
 table(x$cluster)

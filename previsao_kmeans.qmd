@@ -42,7 +42,6 @@ library(tidymodels)
 library(patchwork)
 library(ggcorrplot)
 library(baguette)
-library(poissonreg)
 tidymodels_prefer()
 ```
 
